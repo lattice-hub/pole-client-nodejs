@@ -109,3 +109,5 @@
   全部通过；候选包确认为 `@lattice-hub/pole-client-nodejs@0.2.0`，包含 20 个文件。
 - npm registry 当前返回 404，仍需由 `lattice-hub` npm organization 成员完成首次
   `npm publish --access public`。
+- GitHub 远端 Node.js 18/20/22 矩阵全绿；同时将 CI 和 release-check 的
+  `checkout`、`setup-node` 升级到 v6，消除 Node 20 action runtime 弃用警告。
