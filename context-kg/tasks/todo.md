@@ -1,5 +1,26 @@
 # Node.js Thin SDK
 
+## Sidecar Session v1 与 TargetService v1
+
+- [x] 检查适用约束、Git 状态与现有 API
+- [x] 核对 specification 中的 TargetService 与 bootstrap 契约
+- [x] vendor 新契约资产和 bootstrap.proto
+- [x] 实现 UDS OpenSession、失效与重连
+- [x] 迁移 TargetService 与业务元信息 API
+- [x] 补齐会话、并发快照与契约向量测试
+- [x] 运行 lint、typecheck、test 与 prepack
+- [x] 记录审查结论与已知限制
+
+### Review
+
+- 旧 `TargetEnvelope`、`x-pole-*` 键和固定 Sidecar HTTP endpoint 已从公开 API 与契约资产移除；新 API 只导出 `TargetService`、元信息编码及 `SidecarSession`。
+- `SidecarSession` 通过 `@grpc/grpc-js` 读取 vendored `bootstrap.proto`，经 UDS 的 `OpenSession` server stream 接收首帧；完整四协议表校验成功才会安装冻结地址快照。
+- 断流会同步清空快照，地址读取快速失败；后台按有界指数退避重连，新的有效首帧才恢复业务地址。Node.js 单个 event loop 中通过一次不可变引用替换避免读取到部分更新；Worker 之间必须各自建会话。
+- `npm run lint`、`npm run typecheck`、`npm test`（15/15）、`npm run prepack`、`npm pack --dry-run --json` 与 `git diff --check` 均通过；测试使用真实 `@grpc/grpc-js` UDS server，覆盖环境变量覆盖、首帧、失效、重连和超时。
+- `TargetService v1` 与 `bootstrap.proto` 已由 specification `v0.1.0-ALPHA.39`
+  发布；`contract/VERSION` 固定其不可变 tag 与 commit。正式互操作组合仍以
+  specification compatibility matrix 的精确证据为准。
+
 - [x] 核对 Thin SDK 契约与工程约束
 - [x] 设计不可变 TargetEnvelope 公共 API
 - [x] 实现字段规范化、校验与 Header 编码

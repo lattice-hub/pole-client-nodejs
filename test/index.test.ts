@@ -16,116 +16,173 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
+
 import {
-  DEFAULT_SIDECAR_ENDPOINT,
-  TARGET_ENVELOPE_VERSION,
-  TargetEnvelopeError,
-  createTargetEnvelope,
-  encodeTargetEnvelopeHeaders,
-  type TargetEnvelope,
-  type TargetEnvelopeInput
+  DEFAULT_SIDECAR_SOCKET,
+  SDK_LANGUAGE,
+  SidecarBootstrapError,
+  SidecarUnavailableError,
+  TargetServiceError,
+  connectSidecarSession,
+  createTargetService,
+  encodeTargetServiceMetadata,
+  type SidecarProtocol,
+  type TargetServiceInput
 } from "@pole-io/pole-client-nodejs";
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CONTRACT_ROOT = join(PROJECT_ROOT, "contract");
 const CONFORMANCE_PATH = join(CONTRACT_ROOT, "conformance.json");
+const BOOTSTRAP_PROTO_PATH = join(CONTRACT_ROOT, "bootstrap.proto");
 
 type HeaderPair = readonly [string, string];
-type ContractInput = {
-  readonly namespace: string;
-  readonly service: string;
-  readonly protocol?: string;
-  readonly group?: string;
-  readonly service_version?: string;
-  readonly method?: string;
-  readonly original_endpoint?: string;
-};
 type ValidVector = {
   readonly name: string;
-  readonly input: ContractInput;
-  readonly base_headers?: readonly HeaderPair[];
-  readonly normalized: ContractInput;
-  readonly expected_headers: readonly HeaderPair[];
+  readonly input: TargetServiceInput;
+  readonly normalized: TargetServiceInput;
+  readonly expected_metadata: readonly HeaderPair[];
 };
 type InvalidVector = {
   readonly name: string;
-  readonly input: ContractInput;
-  readonly diagnostic: string;
-};
-type LanguageInvalidVector = {
-  readonly name: string;
-  readonly field: keyof ContractInput;
-  readonly utf16_code_units: readonly string[];
-  readonly diagnostic: string;
-};
-type ReceiveValidVector = {
-  readonly name: string;
-  readonly headers: readonly HeaderPair[];
-  readonly expected_envelope: ContractInput;
-};
-type ReceiveInvalidVector = {
-  readonly name: string;
-  readonly headers: readonly HeaderPair[];
+  readonly input: TargetServiceInput;
   readonly diagnostic: string;
 };
 type Conformance = {
   readonly contract: string;
   readonly contract_version: string;
-  readonly envelope_version: string;
   readonly valid: readonly ValidVector[];
   readonly invalid: readonly InvalidVector[];
-  readonly language_specific_invalid: readonly LanguageInvalidVector[];
   readonly sidecar_receive: {
-    readonly valid: readonly ReceiveValidVector[];
-    readonly invalid: readonly ReceiveInvalidVector[];
+    readonly valid: readonly unknown[];
+    readonly invalid: readonly unknown[];
+  };
+};
+type ClientHello = {
+  readonly sdk_language: string;
+  readonly sdk_version: string;
+  readonly supported_protocols: readonly string[];
+};
+type Listener = {
+  readonly protocol: string;
+  readonly port: number;
+};
+type SidecarEvent = {
+  readonly listener_snapshot?: {
+    readonly listeners: readonly Listener[];
+  };
+};
+type SessionHandler = (
+  call: grpc.ServerWritableStream<ClientHello, SidecarEvent>
+) => void;
+type BootstrapService = grpc.ServiceClientConstructor;
+type BootstrapGrpcObject = {
+  readonly pole: {
+    readonly sidecar: {
+      readonly v1: {
+        readonly SidecarSessionService: BootstrapService;
+      };
+    };
   };
 };
 
 const conformance = JSON.parse(
   readFileSync(CONFORMANCE_PATH, "utf8")
 ) as Conformance;
+const bootstrapDefinition = protoLoader.loadSync(BOOTSTRAP_PROTO_PATH, {
+  keepCase: true,
+  longs: String,
+  enums: String,
+  defaults: true,
+  oneofs: true
+});
+const bootstrapService = (
+  grpc.loadPackageDefinition(bootstrapDefinition) as unknown as BootstrapGrpcObject
+).pole.sidecar.v1.SidecarSessionService;
 
-function toPublicInput(input: ContractInput): TargetEnvelopeInput {
-  return {
-    namespace: input.namespace,
-    service: input.service,
-    ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
-    ...(input.group === undefined ? {} : { group: input.group }),
-    ...(input.service_version === undefined
-      ? {}
-      : { serviceVersion: input.service_version }),
-    ...(input.method === undefined ? {} : { method: input.method }),
-    ...(input.original_endpoint === undefined
-      ? {}
-      : { originalEndpoint: input.original_endpoint })
-  };
+const VALID_LISTENERS: readonly Listener[] = [
+  { protocol: "PROTOCOL_HTTP", port: 21_001 },
+  { protocol: "PROTOCOL_GRPC", port: 21_002 },
+  { protocol: "PROTOCOL_DUBBO", port: 21_003 },
+  { protocol: "PROTOCOL_THRIFT", port: 21_004 }
+];
+
+async function startBootstrapServer(
+  socketPath: string,
+  handler: SessionHandler
+): Promise<grpc.Server> {
+  const server = new grpc.Server();
+  server.addService(bootstrapService.service, {
+    OpenSession: handler
+  } as grpc.UntypedServiceImplementation);
+  await new Promise<void>((resolve, reject) => {
+    server.bindAsync(
+      `unix:${socketPath}`,
+      grpc.ServerCredentials.createInsecure(),
+      (error) => (error === null ? resolve() : reject(error))
+    );
+  });
+  return server;
 }
 
-function toContractShape(envelope: Readonly<TargetEnvelope>): ContractInput {
-  return {
-    namespace: envelope.namespace,
-    service: envelope.service,
-    ...(envelope.protocol === undefined ? {} : { protocol: envelope.protocol }),
-    ...(envelope.group === undefined ? {} : { group: envelope.group }),
-    ...(envelope.serviceVersion === undefined
-      ? {}
-      : { service_version: envelope.serviceVersion }),
-    ...(envelope.method === undefined ? {} : { method: envelope.method }),
-    ...(envelope.originalEndpoint === undefined
-      ? {}
-      : { original_endpoint: envelope.originalEndpoint })
-  };
+function writeSnapshot(
+  call: grpc.ServerWritableStream<ClientHello, SidecarEvent>,
+  listeners: readonly Listener[] = VALID_LISTENERS
+): void {
+  call.write({ listener_snapshot: { listeners } });
 }
 
-test("导出的契约常量与正式资产一致", () => {
-  assert.equal(TARGET_ENVELOPE_VERSION, conformance.envelope_version);
-  assert.equal(conformance.contract, "pole-target-envelope");
-  assert.equal(conformance.contract_version, "1.0.0");
-  assert.equal(DEFAULT_SIDECAR_ENDPOINT, "http://127.0.0.1:15001");
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 2_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("condition did not become true before timeout");
+}
+
+function createSocketDirectory(): { readonly directory: string; readonly socketPath: string } {
+  const directory = mkdtempSync(join(tmpdir(), "pole-client-nodejs-"));
+  return { directory, socketPath: join(directory, "bootstrap.sock") };
+}
+
+test("导出的默认 UDS 路径符合 bootstrap 契约", () => {
+  assert.equal(DEFAULT_SIDECAR_SOCKET, "/var/run/pole/sidecar/bootstrap.sock");
+  assert.equal(SDK_LANGUAGE, "nodejs");
   assert.equal(existsSync(join(PROJECT_ROOT, "dist/index.js")), true);
 });
 
-test("vendored 契约资产完整且校验和一致", () => {
+test("POLE_SIDECAR_SOCKET 覆盖默认 UDS 路径", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  const previousSocketPath = process.env.POLE_SIDECAR_SOCKET;
+  let server: grpc.Server | undefined;
+  try {
+    server = await startBootstrapServer(socketPath, writeSnapshot);
+    process.env.POLE_SIDECAR_SOCKET = socketPath;
+    const session = await connectSidecarSession({ initializationTimeoutMs: 1_000 });
+    try {
+      assert.equal(session.socketPath, socketPath);
+    } finally {
+      session.close();
+    }
+  } finally {
+    if (previousSocketPath === undefined) {
+      delete process.env.POLE_SIDECAR_SOCKET;
+    } else {
+      process.env.POLE_SIDECAR_SOCKET = previousSocketPath;
+    }
+    server?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("vendored 契约资产和校验和完整", () => {
   const checksumLines = readFileSync(
     join(CONTRACT_ROOT, "SHA256SUMS"),
     "utf8"
@@ -134,9 +191,8 @@ test("vendored 契约资产完整且校验和一致", () => {
     .split("\n");
   assert.deepEqual(
     checksumLines.map((line) => line.split(/\s+/u)[1]),
-    ["schema.json", "conformance.json"]
+    ["schema.json", "conformance.json", "bootstrap.proto"]
   );
-
   for (const line of checksumLines) {
     const [expected, fileName] = line.split(/\s+/u);
     assert.ok(expected);
@@ -146,109 +202,181 @@ test("vendored 契约资产完整且校验和一致", () => {
       .digest("hex");
     assert.equal(actual, expected);
   }
-
   const version = readFileSync(join(CONTRACT_ROOT, "VERSION"), "utf8");
-  assert.match(version, /^contract=pole-target-envelope$/mu);
-  assert.match(version, /^version=1\.0\.0$/mu);
-  assert.match(version, /^tag=thin-sdk-contract-v1\.0\.0$/mu);
-  assert.match(
-    version,
-    /^commit=f45b0396b4680fe588a93086ceb2934d3e157d04$/mu
-  );
+  assert.match(version, /^contract=latticehub-thin-sdk-sidecar$/mu);
+  assert.match(version, /^target_service_wire_version=1$/mu);
+  assert.match(version, /^sidecar_session_wire_version=1$/mu);
 });
 
 for (const vector of conformance.valid) {
-  test(`SDK valid 向量：${vector.name}`, () => {
-    const envelope = createTargetEnvelope(toPublicInput(vector.input));
-    assert.deepEqual(toContractShape(envelope), vector.normalized);
-    assert.equal(Object.isFrozen(envelope), true);
-
-    const baseHeaders = Object.fromEntries(vector.base_headers ?? []);
-    const headers = encodeTargetEnvelopeHeaders(envelope, baseHeaders);
-    assert.deepEqual(Object.entries(headers), vector.expected_headers);
-    assert.equal(Object.isFrozen(headers), true);
+  test(`TargetService valid 向量：${vector.name}`, () => {
+    const targetService = createTargetService(vector.input);
+    assert.deepEqual(targetService, vector.normalized);
+    assert.equal(Object.isFrozen(targetService), true);
+    assert.deepEqual(
+      Object.entries(encodeTargetServiceMetadata(targetService)),
+      vector.expected_metadata
+    );
   });
 }
 
 for (const vector of conformance.invalid) {
-  test(`SDK invalid 向量：${vector.name}`, () => {
+  test(`TargetService invalid 向量：${vector.name}`, () => {
     assert.throws(
-      () => createTargetEnvelope(toPublicInput(vector.input)),
+      () => createTargetService(vector.input),
       (error: unknown) =>
-        error instanceof TargetEnvelopeError &&
-        error.diagnostic === vector.diagnostic
+        error instanceof TargetServiceError && error.diagnostic === vector.diagnostic
     );
   });
 }
 
-for (const vector of conformance.language_specific_invalid) {
-  test(`SDK language-specific-invalid 向量：${vector.name}`, () => {
-    const invalidValue = String.fromCharCode(
-      ...vector.utf16_code_units.map((codeUnit) => Number.parseInt(codeUnit, 16))
-    );
-    const input = {
-      namespace: "default",
-      service: "orders",
-      [vector.field]: invalidValue
-    } as ContractInput;
-
-    assert.throws(
-      () => createTargetEnvelope(toPublicInput(input)),
-      (error: unknown) =>
-        error instanceof TargetEnvelopeError &&
-        error.diagnostic === vector.diagnostic
-    );
-  });
-}
-
-test("Sidecar receive 向量作为 vendored 资产结构完整", () => {
-  assert.ok(conformance.sidecar_receive.valid.length > 0);
-  assert.ok(conformance.sidecar_receive.invalid.length > 0);
-
-  for (const vector of conformance.sidecar_receive.valid) {
-    assert.ok(vector.name.length > 0);
-    assert.ok(vector.headers.length >= 3);
-    assert.equal(typeof vector.expected_envelope.namespace, "string");
-    assert.equal(typeof vector.expected_envelope.service, "string");
-  }
-  for (const vector of conformance.sidecar_receive.invalid) {
-    assert.ok(vector.name.length > 0);
-    assert.ok(vector.headers.length > 0);
-    assert.ok(vector.diagnostic.length > 0);
-  }
-});
-
-test("编码前会重新校验伪造的信封结构", () => {
+test("TargetService 拒绝孤立 UTF-16 surrogate，并覆盖伪造内部元信息", () => {
   assert.throws(
-    () =>
-      encodeTargetEnvelopeHeaders({
-        namespace: "default",
-        service: "orders",
-        originalEndpoint: "orders.internal:080"
-      }),
+    () => createTargetService({ namespace: "default", service: "\ud800" }),
     (error: unknown) =>
-      error instanceof TargetEnvelopeError &&
-      error.diagnostic === "INVALID_ORIGINAL_ENDPOINT"
+      error instanceof TargetServiceError &&
+      error.diagnostic === "INVALID_UNICODE_SCALAR"
   );
+  const metadata = encodeTargetServiceMetadata(
+    createTargetService({ namespace: "default", service: "orders" }),
+    {
+      Authorization: "Bearer token",
+      "LatticeHub-Target-Namespace": "forged",
+      "latticehub-target-service": "forged"
+    }
+  );
+  assert.deepEqual(Object.entries(metadata), [
+    ["Authorization", "Bearer token"],
+    ["latticehub-target-namespace", "default"],
+    ["latticehub-target-service", "orders"]
+  ]);
+  assert.equal(Object.isFrozen(metadata), true);
 });
 
-test("保留名为 __proto__ 的非内部 Header", () => {
-  const baseHeaders = JSON.parse(
-    '{"__proto__":"safe","X-Request-ID":"request-1"}'
-  ) as Record<string, string>;
-  const encoded = encodeTargetEnvelopeHeaders(
-    createTargetEnvelope({ namespace: "default", service: "orders" }),
-    baseHeaders
-  );
-
-  assert.equal(Object.hasOwn(encoded, "__proto__"), true);
-  assert.equal(encoded["__proto__"], "safe");
-  assert.equal(encoded["X-Request-ID"], "request-1");
+test("OpenSession 首帧原子安装四协议 listener，并传递官方 ClientHello", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  let server: grpc.Server | undefined;
+  try {
+    let hello: ClientHello | undefined;
+    server = await startBootstrapServer(socketPath, (call) => {
+      hello = call.request;
+      writeSnapshot(call);
+    });
+    const session = await connectSidecarSession({
+      socketPath,
+      initializationTimeoutMs: 1_000
+    });
+    try {
+      assert.equal(session.listenerAddress("http"), "127.0.0.1:21001");
+      assert.equal(session.listenerAddress("grpc"), "127.0.0.1:21002");
+      assert.equal(session.listenerAddress("dubbo"), "127.0.0.1:21003");
+      assert.equal(session.listenerAddress("thrift"), "127.0.0.1:21004");
+      assert.deepEqual(hello?.supported_protocols, [
+        "PROTOCOL_HTTP",
+        "PROTOCOL_GRPC",
+        "PROTOCOL_DUBBO",
+        "PROTOCOL_THRIFT"
+      ]);
+      assert.equal(hello?.sdk_language, SDK_LANGUAGE);
+      const concurrentReads = await Promise.all(
+        Array.from({ length: 64 }, () =>
+          Promise.resolve(session.listenerAddress("grpc" as SidecarProtocol))
+        )
+      );
+      assert.deepEqual(concurrentReads, Array(64).fill("127.0.0.1:21002"));
+    } finally {
+      session.close();
+    }
+  } finally {
+    server?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-test("干净 npm pack 会构建并包含正式契约资产", () => {
+test("断流立即失效旧快照，并在重连首帧原子恢复", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  let firstServer: grpc.Server | undefined;
+  let secondServer: grpc.Server | undefined;
+  try {
+    firstServer = await startBootstrapServer(socketPath, (call) => {
+      writeSnapshot(call, VALID_LISTENERS);
+    });
+    const session = await connectSidecarSession({
+      socketPath,
+      initializationTimeoutMs: 1_000,
+      retryInitialDelayMs: 20,
+      retryMaxDelayMs: 50
+    });
+    try {
+      firstServer.forceShutdown();
+      firstServer = undefined;
+      await waitUntil(() => !session.isAvailable);
+      assert.throws(
+        () => session.listenerAddress("http"),
+        SidecarUnavailableError
+      );
+      secondServer = await startBootstrapServer(socketPath, (call) => {
+        writeSnapshot(call, [
+          { protocol: "PROTOCOL_HTTP", port: 22_001 },
+          { protocol: "PROTOCOL_GRPC", port: 22_002 },
+          { protocol: "PROTOCOL_DUBBO", port: 22_003 },
+          { protocol: "PROTOCOL_THRIFT", port: 22_004 }
+        ]);
+      });
+      await waitUntil(() => session.isAvailable);
+      assert.equal(session.listenerAddress("http"), "127.0.0.1:22001");
+      assert.equal(session.listenerAddress("thrift"), "127.0.0.1:22004");
+    } finally {
+      session.close();
+    }
+  } finally {
+    firstServer?.forceShutdown();
+    secondServer?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("缺少协议的首帧在有界初始化时间内失败", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  let server: grpc.Server | undefined;
+  try {
+    server = await startBootstrapServer(socketPath, (call) => {
+      writeSnapshot(call, VALID_LISTENERS.slice(0, 3));
+    });
+    await assert.rejects(
+      connectSidecarSession({
+        socketPath,
+        initializationTimeoutMs: 100,
+        retryInitialDelayMs: 10,
+        retryMaxDelayMs: 20
+      }),
+      SidecarBootstrapError
+    );
+  } finally {
+    server?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("UDS 不可用时有界重试后初始化失败", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  try {
+    await assert.rejects(
+      connectSidecarSession({
+        socketPath,
+        initializationTimeoutMs: 100,
+        retryInitialDelayMs: 10,
+        retryMaxDelayMs: 20
+      }),
+      SidecarBootstrapError
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("干净 npm pack 会构建并包含新契约资产", () => {
   const packageRoot = mkdtempSync(join(tmpdir(), "pole-client-nodejs-pack-"));
-
   try {
     for (const fileName of [
       "package.json",
@@ -273,7 +401,6 @@ test("干净 npm pack 会构建并包含正式契约资产", () => {
       encoding: "utf8"
     });
     assert.equal(packed.status, 0, packed.stderr);
-
     const packResult = JSON.parse(packed.stdout) as [
       { readonly files: readonly { readonly path: string }[] }
     ];
@@ -282,6 +409,7 @@ test("干净 npm pack 会构建并包含正式契约资产", () => {
     assert.equal(packedFiles.has("dist/index.d.ts"), true);
     assert.equal(packedFiles.has("contract/schema.json"), true);
     assert.equal(packedFiles.has("contract/conformance.json"), true);
+    assert.equal(packedFiles.has("contract/bootstrap.proto"), true);
     assert.equal(packedFiles.has("contract/SHA256SUMS"), true);
     assert.equal(packedFiles.has("contract/VERSION"), true);
   } finally {
