@@ -30,7 +30,7 @@ import {
   encodeTargetServiceMetadata,
   type SidecarProtocol,
   type TargetServiceInput
-} from "@pole-io/pole-client-nodejs";
+} from "@lattice-hub/pole-client-nodejs";
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CONTRACT_ROOT = join(PROJECT_ROOT, "contract");

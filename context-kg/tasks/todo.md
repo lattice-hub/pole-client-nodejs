@@ -90,5 +90,22 @@
   npm Trusted Publishing OIDC 和 public scope 配置，不保存长期 npm token。
 - `npm run lint`、`npm run typecheck`、15 个测试及 `npm pack --dry-run --json`
   全部通过。
-- npm registry 当前尚无 `@pole-io/pole-client-nodejs`，需要先完成一次包初始化发布，
+- npm registry 当前尚无 `@lattice-hub/pole-client-nodejs`，需要先完成一次包初始化发布，
   再在包设置中绑定 Trusted Publisher。
+
+## 2026-08-03 npm scope 迁移
+
+- [x] 扫描旧 `@pole-io` npm scope 引用
+- [x] 将包名、锁文件、README 与自引用测试迁移到 `@lattice-hub`
+- [x] 更新发布文档和经验记录
+- [x] 运行测试与发布包验证
+- [x] 提交并推送迁移改动
+
+### Review
+
+- `package.json`、lockfile、README、测试自引用和发布文档均使用
+  `@lattice-hub/pole-client-nodejs`；vendored proto 的 Go package 保持契约原文。
+- `npm run lint`、`npm run typecheck`、15 个测试和 `npm pack --dry-run --json`
+  全部通过；候选包确认为 `@lattice-hub/pole-client-nodejs@0.2.0`，包含 20 个文件。
+- npm registry 当前返回 404，仍需由 `lattice-hub` npm organization 成员完成首次
+  `npm publish --access public`。

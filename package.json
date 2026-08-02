@@ -1,5 +1,5 @@
 {
-  "name": "@pole-io/pole-client-nodejs",
+  "name": "@lattice-hub/pole-client-nodejs",
   "version": "0.2.0",
   "description": "Framework-neutral Pole Thin SDK for Node.js",
   "type": "module",

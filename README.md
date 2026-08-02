@@ -1,4 +1,4 @@
-# @pole-io/pole-client-nodejs
+# @lattice-hub/pole-client-nodejs
 
 Pole Node.js Thin SDK 的框架无关核心包。它只承担两项职责：
 
@@ -11,7 +11,7 @@ Pole Node.js Thin SDK 的框架无关核心包。它只承担两项职责：
 ## 安装
 
 ```bash
-npm install @pole-io/pole-client-nodejs
+npm install @lattice-hub/pole-client-nodejs
 ```
 
 运行时依赖为官方 `@grpc/grpc-js` 与 `@grpc/proto-loader`；SDK 直接使用 vendor 的
@@ -24,7 +24,7 @@ import {
   connectSidecarSession,
   createTargetService,
   encodeTargetServiceMetadata
-} from "@pole-io/pole-client-nodejs";
+} from "@lattice-hub/pole-client-nodejs";
 
 const sidecar = await connectSidecarSession();
 const target = createTargetService({
