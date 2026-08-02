@@ -77,3 +77,18 @@
 - CI 覆盖 Node.js 18、20、22；未初始化 Git、提交或推送。
 - 最终审查补充 `__proto__` base Header 回归测试，并增加只构建、不发布的手动
   release-check。
+
+## 2026-08-03 npm Trusted Publishing
+
+- [x] 配置 npm OIDC 与 GitHub Release 工作流
+- [x] 验证版本 gate、测试与发布包
+- [x] 提交并推送发布配置
+
+### Review
+
+- GitHub Release 标签必须与 `package.json` 版本一致；发布 job 使用 Node 24、
+  npm Trusted Publishing OIDC 和 public scope 配置，不保存长期 npm token。
+- `npm run lint`、`npm run typecheck`、15 个测试及 `npm pack --dry-run --json`
+  全部通过。
+- npm registry 当前尚无 `@pole-io/pole-client-nodejs`，需要先完成一次包初始化发布，
+  再在包设置中绑定 Trusted Publisher。
