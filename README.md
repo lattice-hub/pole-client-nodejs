@@ -84,7 +84,7 @@ Sidecar 消费后必须删除这两个内部键，不得转发给真实服务。
 `contract/` vendor 了 TargetService 的 `schema.json`、`conformance.json` 和
 Sidecar 的 `bootstrap.proto`；`SHA256SUMS` 覆盖这三份文件。`contract/VERSION`
 固定 Sidecar Session/TargetService wire 版本、specification
-`v0.1.0-ALPHA.39` 与对应不可变提交。正式端到端兼容组合仍以 specification 的
+`develop` 不可变提交。正式端到端兼容组合仍以 specification 的
 compatibility matrix 为准。
 
 ## 开发

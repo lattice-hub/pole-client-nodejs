@@ -17,7 +17,7 @@
 - `SidecarSession` 通过 `@grpc/grpc-js` 读取 vendored `bootstrap.proto`，经 UDS 的 `OpenSession` server stream 接收首帧；完整四协议表校验成功才会安装冻结地址快照。
 - 断流会同步清空快照，地址读取快速失败；后台按有界指数退避重连，新的有效首帧才恢复业务地址。Node.js 单个 event loop 中通过一次不可变引用替换避免读取到部分更新；Worker 之间必须各自建会话。
 - `npm run lint`、`npm run typecheck`、`npm test`（15/15）、`npm run prepack`、`npm pack --dry-run --json` 与 `git diff --check` 均通过；测试使用真实 `@grpc/grpc-js` UDS server，覆盖环境变量覆盖、首帧、失效、重连和超时。
-- `TargetService v1` 与 `bootstrap.proto` 已由 specification `v0.1.0-ALPHA.39`
+- `TargetService v1` 已由 specification `v0.1.0-ALPHA.39` 发布；当前 `bootstrap.proto` 固定到后续 `develop`
   发布；`contract/VERSION` 固定其不可变 tag 与 commit。正式互操作组合仍以
   specification compatibility matrix 的精确证据为准。
 
