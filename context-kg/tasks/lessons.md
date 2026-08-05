@@ -6,3 +6,5 @@
 - 可选字段经过 Unicode trim 后为空时应视为未提供，不能生成空 Header。
 - npm 组织和 GitHub 组织统一使用 `lattice-hub`；Node.js 包 scope 必须是
   `@lattice-hub`，不要从 Pole 项目名推导为 `@pole-io`。
+- Thin SDK 在 specification 功能分支验证后，提交前必须将 `contract/VERSION` 和文档引用
+  切换到已合并的 `develop` 集成提交；不得保留临时工作树 commit。

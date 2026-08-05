@@ -18,6 +18,9 @@ export {
   SidecarUnavailableError,
   connectSidecarSession,
   type ListenerAddresses,
+  type LocalServiceRegistrationInput,
+  type LocalServiceState,
+  type LocalServiceStatus,
   type SidecarProtocol,
   type SidecarSessionOptions
 } from "./sidecar-session.js";

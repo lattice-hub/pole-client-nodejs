@@ -64,6 +64,19 @@ type ClientHello = {
   readonly sdk_version: string;
   readonly supported_protocols: readonly string[];
 };
+type ClientEvent = {
+  readonly hello?: ClientHello;
+  readonly register_local_service?: {
+    readonly registration_id: string;
+    readonly namespace: string;
+    readonly service: string;
+    readonly protocol: string;
+    readonly local_port: number;
+  };
+  readonly unregister_local_service?: {
+    readonly registration_id: string;
+  };
+};
 type Listener = {
   readonly protocol: string;
   readonly port: number;
@@ -72,9 +85,14 @@ type SidecarEvent = {
   readonly listener_snapshot?: {
     readonly listeners: readonly Listener[];
   };
+  readonly local_service_status?: {
+    readonly registration_id: string;
+    readonly state: string;
+    readonly message: string;
+  };
 };
 type SessionHandler = (
-  call: grpc.ServerWritableStream<ClientHello, SidecarEvent>
+  call: grpc.ServerDuplexStream<ClientEvent, SidecarEvent>
 ) => void;
 type BootstrapService = grpc.ServiceClientConstructor;
 type BootstrapGrpcObject = {
@@ -114,7 +132,7 @@ async function startBootstrapServer(
 ): Promise<grpc.Server> {
   const server = new grpc.Server();
   server.addService(bootstrapService.service, {
-    OpenSession: handler
+    OpenControlSession: handler
   } as grpc.UntypedServiceImplementation);
   await new Promise<void>((resolve, reject) => {
     server.bindAsync(
@@ -127,7 +145,7 @@ async function startBootstrapServer(
 }
 
 function writeSnapshot(
-  call: grpc.ServerWritableStream<ClientHello, SidecarEvent>,
+  call: grpc.ServerDuplexStream<ClientEvent, SidecarEvent>,
   listeners: readonly Listener[] = VALID_LISTENERS
 ): void {
   call.write({ listener_snapshot: { listeners } });
@@ -205,7 +223,7 @@ test("vendored 契约资产和校验和完整", () => {
   const version = readFileSync(join(CONTRACT_ROOT, "VERSION"), "utf8");
   assert.match(version, /^contract=latticehub-thin-sdk-sidecar$/mu);
   assert.match(version, /^target_service_wire_version=1$/mu);
-  assert.match(version, /^sidecar_session_wire_version=1$/mu);
+  assert.match(version, /^sidecar_session_wire_version=2$/mu);
 });
 
 for (const vector of conformance.valid) {
@@ -253,14 +271,18 @@ test("TargetService 拒绝孤立 UTF-16 surrogate，并覆盖伪造内部元信�
   assert.equal(Object.isFrozen(metadata), true);
 });
 
-test("OpenSession 首帧原子安装四协议 listener，并传递官方 ClientHello", async () => {
+test("OpenControlSession 首发 ClientHello，首帧原子安装四协议 listener", async () => {
   const { directory, socketPath } = createSocketDirectory();
   let server: grpc.Server | undefined;
   try {
-    let hello: ClientHello | undefined;
+    const clientEvents: ClientEvent[] = [];
     server = await startBootstrapServer(socketPath, (call) => {
-      hello = call.request;
-      writeSnapshot(call);
+      call.on("data", (event: ClientEvent) => {
+        clientEvents.push(event);
+        if (clientEvents.length === 1) {
+          writeSnapshot(call);
+        }
+      });
     });
     const session = await connectSidecarSession({
       socketPath,
@@ -271,13 +293,14 @@ test("OpenSession 首帧原子安装四协议 listener，并传递官方 ClientH
       assert.equal(session.listenerAddress("grpc"), "127.0.0.1:21002");
       assert.equal(session.listenerAddress("dubbo"), "127.0.0.1:21003");
       assert.equal(session.listenerAddress("thrift"), "127.0.0.1:21004");
-      assert.deepEqual(hello?.supported_protocols, [
+      await waitUntil(() => clientEvents.length === 1);
+      assert.deepEqual(clientEvents[0]?.hello?.supported_protocols, [
         "PROTOCOL_HTTP",
         "PROTOCOL_GRPC",
         "PROTOCOL_DUBBO",
         "PROTOCOL_THRIFT"
       ]);
-      assert.equal(hello?.sdk_language, SDK_LANGUAGE);
+      assert.equal(clientEvents[0]?.hello?.sdk_language, SDK_LANGUAGE);
       const concurrentReads = await Promise.all(
         Array.from({ length: 64 }, () =>
           Promise.resolve(session.listenerAddress("grpc" as SidecarProtocol))
@@ -299,7 +322,7 @@ test("断流立即失效旧快照，并在重连首帧原子恢复", async () =>
   let secondServer: grpc.Server | undefined;
   try {
     firstServer = await startBootstrapServer(socketPath, (call) => {
-      writeSnapshot(call, VALID_LISTENERS);
+      call.once("data", () => writeSnapshot(call, VALID_LISTENERS));
     });
     const session = await connectSidecarSession({
       socketPath,
@@ -316,12 +339,12 @@ test("断流立即失效旧快照，并在重连首帧原子恢复", async () =>
         SidecarUnavailableError
       );
       secondServer = await startBootstrapServer(socketPath, (call) => {
-        writeSnapshot(call, [
+        call.once("data", () => writeSnapshot(call, [
           { protocol: "PROTOCOL_HTTP", port: 22_001 },
           { protocol: "PROTOCOL_GRPC", port: 22_002 },
           { protocol: "PROTOCOL_DUBBO", port: 22_003 },
           { protocol: "PROTOCOL_THRIFT", port: 22_004 }
-        ]);
+        ]));
       });
       await waitUntil(() => session.isAvailable);
       assert.equal(session.listenerAddress("http"), "127.0.0.1:22001");
@@ -336,12 +359,134 @@ test("断流立即失效旧快照，并在重连首帧原子恢复", async () =>
   }
 });
 
+test("本地服务注册处理状态、重连重放并支持注销", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  let firstServer: grpc.Server | undefined;
+  let secondServer: grpc.Server | undefined;
+  try {
+    const firstEvents: ClientEvent[] = [];
+    firstServer = await startBootstrapServer(socketPath, (call) => {
+      call.on("data", (event: ClientEvent) => {
+        firstEvents.push(event);
+        if (firstEvents.length === 1) {
+          writeSnapshot(call);
+        } else if (event.register_local_service !== undefined) {
+          call.write({
+            local_service_status: {
+              registration_id: event.register_local_service.registration_id,
+              state: "LOCAL_SERVICE_STATE_REGISTERED",
+              message: "registered"
+            }
+          });
+        }
+      });
+    });
+    const session = await connectSidecarSession({
+      socketPath,
+      initializationTimeoutMs: 1_000,
+      retryInitialDelayMs: 20,
+      retryMaxDelayMs: 50
+    });
+    try {
+      const registrationId = session.registerLocalService({
+        namespace: "default",
+        service: "catalog",
+        protocol: "grpc",
+        localPort: 50_051
+      });
+      await waitUntil(
+        () => session.localServiceStatus(registrationId)?.state === "registered"
+      );
+      assert.equal(firstEvents[0]?.hello?.sdk_language, SDK_LANGUAGE);
+      assert.equal(firstEvents[1]?.register_local_service?.registration_id, registrationId);
+
+      firstServer.forceShutdown();
+      firstServer = undefined;
+      await waitUntil(() => !session.isAvailable);
+
+      const replayedEvents: ClientEvent[] = [];
+      secondServer = await startBootstrapServer(socketPath, (call) => {
+        call.on("data", (event: ClientEvent) => {
+          replayedEvents.push(event);
+          if (replayedEvents.length === 1) {
+            writeSnapshot(call);
+          } else if (event.register_local_service !== undefined) {
+            call.write({
+              local_service_status: {
+                registration_id: event.register_local_service.registration_id,
+                state: "LOCAL_SERVICE_STATE_REGISTERED",
+                message: "replayed"
+              }
+            });
+          } else if (event.unregister_local_service !== undefined) {
+            call.write({
+              local_service_status: {
+                registration_id: event.unregister_local_service.registration_id,
+                state: "LOCAL_SERVICE_STATE_UNREGISTERED",
+                message: "unregistered"
+              }
+            });
+          }
+        });
+      });
+      await waitUntil(
+        () => session.localServiceStatus(registrationId)?.message === "replayed"
+      );
+      assert.deepEqual(replayedEvents[0]?.hello?.supported_protocols, [
+        "PROTOCOL_HTTP",
+        "PROTOCOL_GRPC",
+        "PROTOCOL_DUBBO",
+        "PROTOCOL_THRIFT"
+      ]);
+      assert.equal(
+        replayedEvents[1]?.register_local_service?.registration_id,
+        registrationId
+      );
+      assert.equal(session.unregisterLocalService(registrationId), true);
+      await waitUntil(
+        () => session.localServiceStatus(registrationId)?.state === "unregistered"
+      );
+      assert.equal(session.unregisterLocalService(registrationId), false);
+    } finally {
+      session.close();
+    }
+  } finally {
+    firstServer?.forceShutdown();
+    secondServer?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("关闭会结束 OpenControlSession 客户端流", async () => {
+  const { directory, socketPath } = createSocketDirectory();
+  let server: grpc.Server | undefined;
+  try {
+    let clientStreamEnded = false;
+    server = await startBootstrapServer(socketPath, (call) => {
+      call.once("data", () => writeSnapshot(call));
+      call.once("end", () => {
+        clientStreamEnded = true;
+        call.end();
+      });
+    });
+    const session = await connectSidecarSession({
+      socketPath,
+      initializationTimeoutMs: 1_000
+    });
+    session.close();
+    await waitUntil(() => clientStreamEnded);
+  } finally {
+    server?.forceShutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("缺少协议的首帧在有界初始化时间内失败", async () => {
   const { directory, socketPath } = createSocketDirectory();
   let server: grpc.Server | undefined;
   try {
     server = await startBootstrapServer(socketPath, (call) => {
-      writeSnapshot(call, VALID_LISTENERS.slice(0, 3));
+      call.once("data", () => writeSnapshot(call, VALID_LISTENERS.slice(0, 3)));
     });
     await assert.rejects(
       connectSidecarSession({
