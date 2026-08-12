@@ -1,5 +1,58 @@
 # Node.js Thin SDK
 
+## 2026-08-06 TrafficContext v1
+
+- [x] 核对 TargetService 编码入口与契约资产
+- [x] 先写 TrafficContext 传播与作用域测试
+- [x] 实现 AsyncLocalStorage 原生存储和可选 OTel adapter
+- [x] 接入 TargetService metadata 公共编码路径
+- [x] 复制 v1 契约、更新 README 并完成全量验证
+- [x] 复审 W3C OWS、外部空值与输入限制兼容性
+- [x] 二轮复审：空上下文、大小写与 OTel 统一 API 语义
+- [x] 同步新版 conformance 空上下文清理向量与校验和
+- [x] 注入清理全部精确小写保留前缀，extract 保持未知字段拒绝
+- [x] 修复 native 外层与 OTel 子 scope 的读取优先级
+- [x] 对齐真实 `@opentelemetry/api` 模块类型与顶层 `createContextKey`
+- [x] 分离 native closeable attach 与 OTel callback scope
+- [x] 执行全部 TrafficContext conformance 向量并校验 diagnostic
+- [x] 通过真实 `api.context.active()` 验证 OTel Baggage current
+
+### Review
+
+- `TrafficContext` 使用 AsyncLocalStorage scope/reset；可选 OTel adapter 由调用方传入
+  `@opentelemetry/api` 对象，核心包不产生 OTel 硬依赖。
+- Baggage 输出保留外部成员、覆盖旧保留成员，拒绝非法 reserved 字段并在无成员时删除 carrier；
+  Node 测试同时执行 vendored conformance 向量。
+- Baggage parser 按 W3C 支持 SP/HTAB OWS、外部空值、合法 property，并拒绝非法 token/
+  baggage-octet；多 Header 按逗号合并后在输入阶段限制 8192 bytes。
+- 二轮复审后，空 TrafficContext 与 version-only carrier 合法；native attach 使用
+  `AsyncLocalStorage`，OTel current 由 callback scope 承载。
+- `encodeTargetServiceMetadataWithTrafficContext` 在同一个出站元信息装配点写入
+  TargetService 和下游可传递的 Baggage，显式 context 优先。
+- 已执行 `npm run lint`、`npm run typecheck`、`npm test`、`npm run prepack`、
+  `npm pack --dry-run --json` 和 `git diff --check`。
+- 四轮复审后，公开接口使用与真实 `@opentelemetry/api` 精确兼容的结构类型，
+  `createContextKey` 从模块顶层读取；OTel run 清理全部精确小写保留前缀，恢复到含未知保留键的
+  Baggage 时 current 拒绝该上下文。conformance 测试完整执行 valid、sidecar receive
+  valid/invalid 并精确比对 diagnostic。
+- 五轮复审纠正 Node OTel 作用域语义：`attachTrafficContext` 始终是 native closeable scope；
+  `runWithTrafficContext` 才通过真实 `api.context.with` 建立标准 OTel callback scope。run 屏蔽进入前
+  的 native current，operation 内新建的 attach 可覆盖领域 current，但不会篡改标准 OTel Baggage；
+  测试直接读取 `api.context.active()`，不再依赖 adapter 私有 context。
+- Specification 已合入 `develop`；`contract/VERSION` 固定到权威提交
+  `67b101bb6e3906b4337affefd33ef778cec692b3`，但该 SDK 尚未发布，因此保留
+  `source_state=unreleased-develop`。TrafficContext 四份 vendored 资产和
+  `bootstrap.proto` 已逐字节比对该提交；不依赖工作区中可能滞后的 Sidecar 克隆。
+- 复核后将 `sidecar_session_wire_version` 从遗留的 `2` 修正为 `1`，并同步契约测试断言。
+  权威 `thin-sdk/README.md` 明确列出 Sidecar Session wire version `1`；Node vendored 的
+  `bootstrap.proto` 与该提交的 `api/v1/sidecar/bootstrap.proto` 完全一致，且 Go、Java、Python、
+  C++、C# 的 `contract/VERSION` 同样记录 `1`。现有 Node control-session API 的新增能力不能单独
+  证明 wire version 应升级。
+- 本轮复审执行 `npm run lint`、`npm run typecheck`、`npm test`（25/25）、`npm run prepack`、
+  `npm pack --dry-run --json`、`git diff --check`；vendored TrafficContext 的
+  `schema.json`/`conformance.json` 均通过其 SHA256SUMS 校验。`context-kg` lint 仍因仓库既有的
+  tasks 页面无 frontmatter、缺少 `_meta/index.md` 而失败，未为一次 SDK 任务改造知识库结构。
+
 ## 2026-08-06 Sidecar Service Session v2
 
 - [x] 核对 `OpenControlSession` 双向流契约与现有会话实现

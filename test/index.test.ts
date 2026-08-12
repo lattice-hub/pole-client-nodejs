@@ -209,7 +209,15 @@ test("vendored 契约资产和校验和完整", () => {
     .split("\n");
   assert.deepEqual(
     checksumLines.map((line) => line.split(/\s+/u)[1]),
-    ["schema.json", "conformance.json", "bootstrap.proto"]
+    [
+      "schema.json",
+      "conformance.json",
+      "bootstrap.proto",
+      "traffic-context/v1/README.md",
+      "traffic-context/v1/schema.json",
+      "traffic-context/v1/conformance.json",
+      "traffic-context/v1/SHA256SUMS"
+    ]
   );
   for (const line of checksumLines) {
     const [expected, fileName] = line.split(/\s+/u);
@@ -223,7 +231,8 @@ test("vendored 契约资产和校验和完整", () => {
   const version = readFileSync(join(CONTRACT_ROOT, "VERSION"), "utf8");
   assert.match(version, /^contract=latticehub-thin-sdk-sidecar$/mu);
   assert.match(version, /^target_service_wire_version=1$/mu);
-  assert.match(version, /^sidecar_session_wire_version=2$/mu);
+  assert.match(version, /^traffic_context_wire_version=1$/mu);
+  assert.match(version, /^sidecar_session_wire_version=1$/mu);
 });
 
 for (const vector of conformance.valid) {

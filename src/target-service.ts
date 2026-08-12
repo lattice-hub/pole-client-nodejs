@@ -137,3 +137,58 @@ export function encodeTargetServiceMetadata(
   );
   return Object.freeze(encoded);
 }
+
+// encodeTargetServiceMetadataWithTrafficContext assembles TargetService and W3C Baggage
+// at the same egress point. An explicit TrafficContext wins over current storage.
+export function encodeTargetServiceMetadataWithTrafficContext(
+  targetService: Readonly<TargetService>,
+  metadata: Metadata = {},
+  explicitTrafficContext?: Readonly<TrafficContext>
+): Metadata {
+  const targetMetadata = encodeTargetServiceMetadata(targetService, metadata);
+  const baggageValues: string[] = [];
+  let baggageName: string | undefined;
+  for (const [name, value] of Object.entries(targetMetadata)) {
+    if (name.toLowerCase() === BAGGAGE_HEADER_NAME) {
+      baggageValues.push(value);
+      baggageName ??= name;
+    }
+  }
+  const baggage = injectTrafficContext(baggageValues, explicitTrafficContext);
+  const encoded: Record<string, string> = Object.create(null) as Record<string, string>;
+  let baggageWritten = false;
+  for (const [name, value] of Object.entries(targetMetadata)) {
+    if (name.toLowerCase() === BAGGAGE_HEADER_NAME) {
+      if (!baggageWritten && baggage !== undefined) {
+        Object.defineProperty(encoded, baggageName ?? BAGGAGE_HEADER_NAME, {
+          configurable: true,
+          enumerable: true,
+          value: baggage,
+          writable: true
+        });
+      }
+      baggageWritten = true;
+      continue;
+    }
+    Object.defineProperty(encoded, name, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true
+    });
+  }
+  if (baggage !== undefined && !baggageWritten) {
+    Object.defineProperty(encoded, baggageName ?? BAGGAGE_HEADER_NAME, {
+      configurable: true,
+      enumerable: true,
+      value: baggage,
+      writable: true
+    });
+  }
+  return Object.freeze(encoded);
+}
+import {
+  BAGGAGE_HEADER_NAME,
+  type TrafficContext,
+  injectTrafficContext
+} from "./traffic-context.js";

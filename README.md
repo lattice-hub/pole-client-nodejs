@@ -92,9 +92,50 @@ surrogate 和 Unicode `Cc` 控制字符，按 Unicode 15.1 `White_Space` 去除�
 Sidecar 消费后必须删除这两个内部键，不得转发给真实服务。v1 以 Kubernetes Pod 为
 信任边界，不防御已被攻陷的同 Pod 进程。
 
+## TrafficContext v1
+
+`TrafficContext` 是唯一的流量标签模型，`campaign`、`lane` 和 `bucket` 均可选，且不通过
+`trace-id` 关联灰度。Node 默认使用 `AsyncLocalStorage`：`attachTrafficContext` 返回可关闭
+scope，`close()` 会恢复上一个上下文；`resetTrafficContext` 清空当前原生上下文。
+`extractTrafficContext` 只解码 carrier，`injectTrafficContext` 的显式参数优先，否则读取
+`currentTrafficContext()`。
+
+```ts
+import {
+  attachTrafficContext,
+  createTrafficContext,
+  createTargetService,
+  encodeTargetServiceMetadataWithTrafficContext
+} from "@lattice-hub/pole-client-nodejs";
+
+const scope = attachTrafficContext(createTrafficContext({ lane: "gray" }));
+try {
+  const metadata = encodeTargetServiceMetadataWithTrafficContext(
+    createTargetService({ namespace: "production", service: "catalog" }),
+    { authorization: "Bearer token" }
+  );
+  // HTTP、Thrift-over-HTTP、gRPC metadata 和 Dubbo attachment 复用该装配结果。
+} finally {
+  scope.close();
+}
+```
+
+若应用已安装 `@opentelemetry/api`，可将其 API 对象传入
+`createOpenTelemetryTrafficContextAdapter` 或
+`installOpenTelemetryTrafficContextAdapter`，adapter 会把领域值及流量成员写入 OTel Context/
+Baggage。Node 的 OTel 等价 attach 是 `runWithTrafficContext(context, operation)`：SDK 在 callback
+期间调用真实 `api.context.with`，因此 `api.context.active()` 和标准 Propagator 可以直接读取当前
+OTel Baggage。`attachTrafficContext` 始终使用 native `AsyncLocalStorage` 并返回 closeable scope；
+OTel callback 会屏蔽进入前的 native scope，但 callback 内新建的 native attach 仍可显式覆盖
+`currentTrafficContext()`。公开 adapter 类型与真实 `@opentelemetry/api` 模块结构兼容，核心包
+不产生运行时硬依赖。
+自动框架 hook、自动 OTel propagator 安装不在本次范围内；框架 adapter 应在入口 extract 后
+建立请求 scope，并在出站调用使用 `encodeTargetServiceMetadataWithTrafficContext`。完整 wire 契约位于
+`contract/traffic-context/v1/`。
+
 ## 契约资产
 
-`contract/` vendor 了 TargetService 的 `schema.json`、`conformance.json` 和
+`contract/` vendor 了 TargetService、TrafficContext 的 `schema.json`、`conformance.json` 和
 Sidecar 的 `bootstrap.proto`；`SHA256SUMS` 覆盖这三份文件。`contract/VERSION`
 固定 Sidecar Session/TargetService wire 版本、已合并的 specification `develop`
 不可变提交。正式端到端兼容组合仍以 specification 的
